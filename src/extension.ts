@@ -23,33 +23,44 @@ class GemmaChatProvider implements vscode.WebviewViewProvider {
 
     view.webview.onDidReceiveMessage(async (msg) => {
       if (msg.type === 'chat') {
-        // Stream response from Ollama
-        const response = await fetch('http://localhost:11434/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'gemma4:e4b',
-            messages: msg.history,
-            stream: true,
-          }),
-        });
+        try {
+          // Stream response from Ollama
+          const response = await fetch('http://localhost:11434/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'gemma4:e4b',
+              messages: msg.history,
+              stream: true,
+            }),
+          });
 
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) { break; }
-
-          const lines = decoder.decode(value).split('\n').filter(Boolean);
-          for (const line of lines) {
-            const data = JSON.parse(line);
-            view.webview.postMessage({
-              type: 'token',
-              content: data.message?.content ?? '',
-              done: data.done,
-            });
+          if (!response.ok) {
+            const errText = await response.text();
+            view.webview.postMessage({ type: 'error', content: `Ollama error: ${response.status} ${errText}` });
+            return;
           }
+
+          const reader = response.body!.getReader();
+          const decoder = new TextDecoder();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) { break; }
+
+            const lines = decoder.decode(value).split('\n').filter(Boolean);
+            for (const line of lines) {
+              const data = JSON.parse(line);
+              view.webview.postMessage({
+                type: 'token',
+                content: data.message?.content ?? '',
+                done: data.done,
+              });
+            }
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          view.webview.postMessage({ type: 'error', content: `Failed to reach Ollama: ${message}` });
         }
       }
 
@@ -121,6 +132,12 @@ function getWebviewHTML(): string {
       if (msg.type === 'token') {
         currentAssistantDiv.textContent += msg.content;
         if (msg.done) history.push({ role: 'assistant', content: currentAssistantDiv.textContent });
+      }
+      if (msg.type === 'error') {
+        if (currentAssistantDiv) {
+          currentAssistantDiv.textContent = '⚠️ ' + msg.content;
+          currentAssistantDiv.style.color = 'red';
+        }
       }
       if (msg.type === 'context') {
         document.getElementById('input').value = 
